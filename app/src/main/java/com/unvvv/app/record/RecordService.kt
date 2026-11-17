@@ -21,6 +21,7 @@ import com.unvvv.app.data.Camera
 import com.unvvv.app.data.CameraRepo
 import com.unvvv.app.data.Prefs
 import com.unvvv.app.data.liveMedia
+import com.unvvv.app.face.FaceWatcher
 import com.unvvv.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +47,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class RecordService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val recorders = HashMap<String, Recorder>()
+    private val watchers = HashMap<String, FaceWatcher>()
     private var wake: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -61,17 +63,39 @@ class RecordService : Service() {
             ?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "unv:rec")
             ?.apply { setReferenceCounted(false); acquire() }
         scope.launch {
-            CameraRepo.cameras.combine(manual) { cams, man -> cams.filter { it.record || it.id in man } }
-                .collect { sync(it) }
+            combine(CameraRepo.cameras, manual, eventRec, reload) { cams, man, ev, _ ->
+                val now = System.currentTimeMillis()
+                cams.filter { it.record || it.id in man || (ev[it.id] ?: 0L) > now } to cams.filter { it.faces }
+            }.collect { (rec, faces) -> sync(rec, faces) }
+        }
+        scope.launch {
+            while (true) {
+                delay(10_000)
+                val now = System.currentTimeMillis()
+                val m = eventRec.value.filterValues { it > now }
+                if (m.size != eventRec.value.size) eventRec.value = m
+            }
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startFg(recorders.size)
+        startFg(recorders.size, watchers.size)
         return START_STICKY
     }
 
-    private fun sync(want: List<Camera>) {
+    private fun sync(want: List<Camera>, faces: List<Camera>) {
+        val hd = Prefs.faceHd
+        val fids = faces.map { it.id }.toSet()
+        watchers.keys.filter { it !in fids }.forEach { watchers.remove(it)?.stop() }
+        for (c in faces) {
+            val w = watchers[c.id]
+            if (w == null || w.camera != c || w.hd != hd) {
+                w?.stop()
+                watchers[c.id] = FaceWatcher(c, hd).also { it.start() }
+            }
+        }
+        watching.value = fids
+
         val ids = want.map { it.id }.toSet()
         recorders.keys.filter { it !in ids }.forEach { recorders.remove(it)?.stop() }
         for (c in want) {
@@ -83,18 +107,23 @@ class RecordService : Service() {
         }
         manual.value = manual.value.filter { id -> CameraRepo.get(id) != null }.toSet()
         active.value = ids
-        if (want.isEmpty()) stopSelf() else startFg(want.size)
+        if (want.isEmpty() && faces.isEmpty()) stopSelf() else startFg(want.size, faces.size)
     }
 
-    private fun startFg(count: Int) {
+    private fun startFg(count: Int, faceCount: Int = 0) {
         val pi = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val n: Notification = NotificationCompat.Builder(this, App.CHANNEL_REC)
             .setSmallIcon(R.drawable.ic_rec)
-            .setContentTitle("Идёт запись")
-            .setContentText(if (count > 0) "Камер: $count" else "Подготовка…")
+            .setContentTitle(if (count > 0) "Идёт запись" else "Наблюдение")
+            .setContentText(
+                listOfNotNull(
+                    if (count > 0) "запись: $count" else null,
+                    if (faceCount > 0) "распознавание лиц: $faceCount" else null,
+                ).joinToString(" · ").ifEmpty { "Подготовка…" }.replaceFirstChar { it.uppercase() }
+            )
             .setOngoing(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -106,7 +135,10 @@ class RecordService : Service() {
     override fun onDestroy() {
         recorders.values.forEach { it.stop() }
         recorders.clear()
+        watchers.values.forEach { it.stop() }
+        watchers.clear()
         active.value = emptySet()
+        watching.value = emptySet()
         scope.cancel()
         runCatching { wake?.release() }
         runCatching { wifiLock?.release() }
@@ -120,8 +152,24 @@ class RecordService : Service() {
         /** Камеры, которые сейчас пишутся. */
         val active = MutableStateFlow<Set<String>>(emptySet())
 
+        /** Камеры с активным распознаванием лиц. */
+        val watching = MutableStateFlow<Set<String>>(emptySet())
+
+        /** Запись по событию: id камеры → до какого времени писать. */
+        val eventRec = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+        /** Перезапуск наблюдения (например, после смены качества анализа). */
+        val reload = MutableStateFlow(0)
+
+        fun recordFor(ctx: Context, camId: String, ms: Long) {
+            val until = System.currentTimeMillis() + ms
+            eventRec.value = eventRec.value + (camId to maxOf(until, eventRec.value[camId] ?: 0L))
+            ensure(ctx)
+        }
+
         fun ensure(ctx: Context) {
-            val need = CameraRepo.cameras.value.any { it.record } || manual.value.isNotEmpty()
+            val cams = CameraRepo.cameras.value
+            val need = cams.any { it.record || it.faces } || manual.value.isNotEmpty() || eventRec.value.isNotEmpty()
             if (need) {
                 runCatching {
                     ContextCompat.startForegroundService(ctx, Intent(ctx, RecordService::class.java))
@@ -136,6 +184,7 @@ class RecordService : Service() {
 
         fun stopAll() {
             manual.value = emptySet()
+            eventRec.value = emptyMap()
             CameraRepo.setAllRecord(false)
         }
     }

@@ -24,6 +24,8 @@ data class Camera(
     val customUrl: String = "",
     /** Постоянная запись. */
     val record: Boolean = false,
+    /** Распознавание лиц в фоне. */
+    val faces: Boolean = false,
 ) {
     /** sub = true — дополнительный (лёгкий) поток, false — основной. */
     fun url(sub: Boolean): String {
@@ -37,7 +39,7 @@ data class Camera(
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("host", host).put("port", port)
         .put("user", user).put("pass", pass).put("channel", channel)
-        .put("customUrl", customUrl).put("record", record)
+        .put("customUrl", customUrl).put("record", record).put("faces", faces)
 
     companion object {
         fun fromJson(o: JSONObject) = Camera(
@@ -50,12 +52,13 @@ data class Camera(
             channel = o.optInt("channel", 1),
             customUrl = o.optString("customUrl", ""),
             record = o.optBoolean("record", false),
+            faces = o.optBoolean("faces", false),
         )
     }
 }
 
 /** Готовит VLC Media для живого RTSP-потока камеры. */
-fun liveMedia(cam: Camera, sub: Boolean, caching: Int = 300, audio: Boolean = false): Media {
+fun liveMedia(cam: Camera, sub: Boolean, caching: Int = Prefs.cachingMs(), audio: Boolean = false): Media {
     val m = Media(App.vlc, Uri.parse(cam.url(sub)))
     if (cam.user.isNotEmpty()) {
         m.addOption(":rtsp-user=${cam.user}")
@@ -63,8 +66,20 @@ fun liveMedia(cam: Camera, sub: Boolean, caching: Int = 300, audio: Boolean = fa
     }
     m.addOption(":network-caching=$caching")
     if (!audio) m.addOption(":no-audio")
+    m.addOption(":live-caching=$caching")
     m.setHWDecoderEnabled(true, false)
     return m
+}
+
+/** Остановка/освобождение плееров VLC — блокирующие вызовы, поэтому не в главном потоке. */
+object VlcBg {
+    private val exec = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "vlc-bg").apply { isDaemon = true }
+    }
+
+    fun run(block: () -> Unit) {
+        exec.execute { runCatching(block) }
+    }
 }
 
 object CameraRepo {

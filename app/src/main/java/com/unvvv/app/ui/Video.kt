@@ -31,16 +31,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.unvvv.app.App
 import com.unvvv.app.data.Camera
+import com.unvvv.app.data.VlcBg
 import com.unvvv.app.data.liveMedia
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.util.VLCVideoLayout
 import java.io.File
 
-/** Живой поток с автоматическим переподключением. */
+/** Живой поток с автоматическим переподключением. Все блокирующие вызовы VLC — в фоне. */
 class LivePlayer(private val cam: Camera, private val sub: Boolean, private val audio: Boolean) {
     val player = MediaPlayer(App.vlc)
     var status by mutableStateOf<String?>("Подключение…")
+        private set
+
+    /** Соотношение сторон картинки (ширина/высота) с учётом SAR. */
+    var aspect by mutableFloatStateOf(16f / 9f)
         private set
     var muted = true
         set(v) {
@@ -48,17 +53,29 @@ class LivePlayer(private val cam: Camera, private val sub: Boolean, private val 
             runCatching { player.setVolume(if (v) 0 else 100) }
         }
     private val handler = Handler(Looper.getMainLooper())
+    @Volatile
     private var released = false
     private var attached = false
 
     init {
         player.setEventListener { e ->
             when (e.type) {
-                MediaPlayer.Event.Vout -> if (e.voutCount > 0) status = null
+                MediaPlayer.Event.Vout -> if (e.voutCount > 0) {
+                    status = null
+                    updateAspect()
+                }
+                MediaPlayer.Event.ESAdded -> updateAspect()
                 MediaPlayer.Event.Playing -> player.setVolume(if (muted) 0 else 100)
                 MediaPlayer.Event.EncounteredError, MediaPlayer.Event.EndReached -> retry()
             }
         }
+    }
+
+    private fun updateAspect() {
+        val t = runCatching { player.currentVideoTrack }.getOrNull() ?: return
+        if (t.width <= 0 || t.height <= 0) return
+        val sar = if (t.sarNum > 0 && t.sarDen > 0) t.sarNum.toFloat() / t.sarDen else 1f
+        aspect = t.width * sar / t.height
     }
 
     fun attach(layout: VLCVideoLayout) {
@@ -81,9 +98,13 @@ class LivePlayer(private val cam: Camera, private val sub: Boolean, private val 
         status = "Нет связи с камерой.\nПереподключение…"
         handler.removeCallbacksAndMessages(null)
         handler.postDelayed({
-            if (!released) {
-                player.stop()
-                start()
+            if (!released) VlcBg.run {
+                synchronized(player) {
+                    if (!released) {
+                        player.stop()
+                        start()
+                    }
+                }
             }
         }, 3000)
     }
@@ -92,9 +113,14 @@ class LivePlayer(private val cam: Camera, private val sub: Boolean, private val 
         released = true
         handler.removeCallbacksAndMessages(null)
         player.setEventListener(null)
-        runCatching { player.stop() }
         if (attached) runCatching { player.detachViews() }
-        player.release()
+        val p = player
+        VlcBg.run {
+            synchronized(p) {
+                p.stop()
+                p.release()
+            }
+        }
     }
 }
 
@@ -106,10 +132,12 @@ fun LiveVideo(
     audio: Boolean = false,
     muted: Boolean = true,
     compact: Boolean = false,
+    onAspect: (Float) -> Unit = {},
 ) {
     val lp = remember(cam, sub, audio) { LivePlayer(cam, sub, audio) }
     DisposableEffect(lp) { onDispose { lp.release() } }
     LaunchedEffect(lp, muted) { lp.muted = muted }
+    LaunchedEffect(lp, lp.aspect) { onAspect(lp.aspect) }
     Box(modifier.background(Color.Black), contentAlignment = Alignment.Center) {
         key(lp) {
             AndroidView(
@@ -210,8 +238,11 @@ class FilePlayer {
 
     fun release() {
         player.setEventListener(null)
-        runCatching { player.stop() }
         if (attached) runCatching { player.detachViews() }
-        player.release()
+        val p = player
+        VlcBg.run {
+            p.stop()
+            p.release()
+        }
     }
 }

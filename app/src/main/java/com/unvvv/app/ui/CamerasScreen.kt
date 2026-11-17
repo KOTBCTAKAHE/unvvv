@@ -131,10 +131,10 @@ fun CamerasScreen(onOpen: (String) -> Unit, onScan: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(cams, key = { it.id }) { c ->
+                items(cams, key = { it.id }, contentType = { "cam" }) { c ->
                     CameraTile(
                         cam = c,
-                        sub = cols > 1,
+                        sub = true,
                         compact = cols > 2,
                         rec = c.id in recording,
                         onClick = { onOpen(c.id) },

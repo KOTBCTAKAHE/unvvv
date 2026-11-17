@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Stop
@@ -47,6 +49,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -58,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.unvvv.app.data.CameraRepo
+import com.unvvv.app.face.FaceEngine
 import com.unvvv.app.record.RecordService
 import kotlinx.coroutines.delay
 
@@ -79,6 +85,8 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
     var scale by remember(camId) { mutableFloatStateOf(1f) }
     var offset by remember(camId) { mutableStateOf(Offset.Zero) }
     var size by remember { mutableStateOf(IntSize.Zero) }
+    var aspect by remember(camId) { mutableFloatStateOf(16f / 9f) }
+    val liveFaces by FaceEngine.live.collectAsState()
 
     Immersive()
     LaunchedEffect(controls, poke) {
@@ -103,18 +111,24 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
             .background(Color.Black)
             .onSizeChanged { size = it }
     ) {
-        if (LocalVideoActive.current) {
-            LiveVideo(
-                cam, sub = !hd, audio = true, muted = muted,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                    },
-            )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                }
+        ) {
+            if (LocalVideoActive.current) {
+                LiveVideo(
+                    cam, sub = !hd, audio = true, muted = muted,
+                    modifier = Modifier.fillMaxSize(),
+                    onAspect = { aspect = it },
+                )
+            }
+            FaceOverlay(liveFaces[cam.id], aspect)
         }
         Box(
             Modifier
@@ -143,7 +157,7 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
                 }
         )
 
-        if (recording) {
+        if (recording || cam.faces) {
             Row(
                 Modifier
                     .align(Alignment.TopEnd)
@@ -154,9 +168,15 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(RecRed))
-                Spacer(Modifier.width(6.dp))
-                Text("REC", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                if (cam.faces) {
+                    Icon(Icons.Default.Face, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(if (recording) 8.dp else 0.dp))
+                }
+                if (recording) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(RecRed))
+                    Spacer(Modifier.width(6.dp))
+                    Text("REC", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
@@ -179,7 +199,7 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
                     TextButton(onClick = { hd = !hd; poke++ }) {
                         Text(if (hd) "HD" else "SD", color = Color.White, fontWeight = FontWeight.Bold)
                     }
-                    if (recording) Spacer(Modifier.width(64.dp))
+                    if (recording || cam.faces) Spacer(Modifier.width(80.dp))
                 }
 
                 Row(
@@ -230,6 +250,52 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
                     }
                 }
             }
+        }
+    }
+}
+
+/** Рамки лиц поверх живого видео (данные от фонового распознавания). */
+@Composable
+private fun FaceOverlay(data: FaceEngine.Live?, aspect: Float) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(data) {
+        visible = data != null && System.currentTimeMillis() - data.time < 2500
+        if (visible) {
+            delay(2500)
+            visible = false
+        }
+    }
+    if (!visible || data == null || data.boxes.isEmpty()) return
+    val labelPaint = remember {
+        android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = 36f
+            isAntiAlias = true
+            setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK)
+        }
+    }
+    Canvas(Modifier.fillMaxSize()) {
+        val va = if (aspect > 0f) aspect else 16f / 9f
+        val sa = size.width / size.height
+        val cw = if (va > sa) size.width else size.height * va
+        val ch = if (va > sa) size.width / va else size.height
+        val ox = (size.width - cw) / 2f
+        val oy = (size.height - ch) / 2f
+        for (b in data.boxes) {
+            val c = when {
+                b.known -> Color(0xFF22C55E)
+                b.label == null -> Color.White.copy(alpha = 0.6f)
+                else -> RecRed
+            }
+            val l = ox + b.rect.left * cw
+            val t = oy + b.rect.top * ch
+            drawRect(
+                c,
+                topLeft = Offset(l, t),
+                size = Size((b.rect.right - b.rect.left) * cw, (b.rect.bottom - b.rect.top) * ch),
+                style = Stroke(width = 3.dp.toPx()),
+            )
+            b.label?.let { drawContext.canvas.nativeCanvas.drawText(it, l, t - 10f, labelPaint) }
         }
     }
 }

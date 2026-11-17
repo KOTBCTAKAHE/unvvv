@@ -50,6 +50,7 @@ fun SettingsScreen() {
     val ctx = LocalContext.current
     var gb by remember { mutableIntStateOf(Prefs.storageGb) }
     var seg by remember { mutableIntStateOf(Prefs.segmentMin) }
+    var lat by remember { mutableIntStateOf(Prefs.latency) }
     var used by remember { mutableLongStateOf(0L) }
     var free by remember { mutableLongStateOf(0L) }
     val active by RecordService.active.collectAsState()
@@ -67,6 +68,19 @@ fun SettingsScreen() {
             Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Section("Видео") {
+                Text("Задержка / плавность", color = MaterialTheme.colorScheme.secondary)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Минимальная задержка", "Баланс", "Максимально плавно").forEachIndexed { i, t ->
+                        FilterChip(lat == i, { lat = i; Prefs.latency = i }, label = { Text(t) })
+                    }
+                }
+                Text(
+                    "Если видео подтормаживает или рассыпается — выберите «Максимально плавно». Применяется при следующем открытии камеры.",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+
             Section("Место под записи") {
                 Text("Занято: ${fmtSize(used)} · свободно на телефоне: ${fmtSize(free)}", color = MaterialTheme.colorScheme.secondary)
                 Text("Когда лимит заполнен, самые старые записи удаляются автоматически.", style = MaterialTheme.typography.labelSmall)

@@ -3,6 +3,7 @@ package com.unvvv.app.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Videocam
@@ -26,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -40,13 +43,30 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import com.unvvv.app.record.RecordService
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         RecordService.ensure(this)
+        handle(intent)
         setContent { AppTheme { AppRoot() } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handle(intent)
+    }
+
+    private fun handle(i: Intent?) {
+        val t = i?.getIntExtra(EXTRA_TAB, -1) ?: -1
+        if (t >= 0) openTab.value = t
+    }
+
+    companion object {
+        const val EXTRA_TAB = "tab"
+        val openTab = MutableStateFlow<Int?>(null)
     }
 }
 
@@ -77,6 +97,16 @@ fun AppRoot() {
     val pop: () -> Unit = { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
     BackHandler(enabled = stack.size > 1) { pop() }
 
+    val requestedTab by MainActivity.openTab.collectAsState()
+    LaunchedEffect(requestedTab) {
+        requestedTab?.let {
+            tab = it
+            stack.clear()
+            stack.add(Route.Home)
+            MainActivity.openTab.value = null
+        }
+    }
+
     CompositionLocalProvider(LocalVideoActive provides active) {
         when (val r = stack.last()) {
             Route.Home -> Scaffold(
@@ -84,6 +114,7 @@ fun AppRoot() {
                     NavigationBar {
                         NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Videocam, null) }, label = { Text("Камеры") })
                         NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.VideoLibrary, null) }, label = { Text("Записи") })
+                        NavigationBarItem(tab == 3, { tab = 3 }, { Icon(Icons.Default.Face, null) }, label = { Text("Лица") })
                         NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.Settings, null) }, label = { Text("Настройки") })
                     }
                 }
@@ -96,6 +127,7 @@ fun AppRoot() {
                             onFilter = { recordsFilter = it },
                             onPlay = { c, p -> push(Route.Play(c, p)) },
                         )
+                        3 -> FacesScreen()
                         else -> SettingsScreen()
                     }
                 }

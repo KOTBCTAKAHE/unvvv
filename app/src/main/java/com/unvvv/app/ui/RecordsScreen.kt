@@ -54,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -188,8 +189,15 @@ private val speeds = listOf(1f, 2f, 4f, 8f, 16f, 0.5f)
 @Composable
 fun PlayerScreen(camId: String, path: String, onBack: () -> Unit) {
     val ctx = LocalContext.current
-    val list = remember(camId) { Storage.list(ctx).filter { it.camId == camId }.sortedBy { it.start } }
-    var index by remember { mutableIntStateOf(list.indexOfFirst { it.file.path == path }.coerceAtLeast(0)) }
+    val loaded by produceState<List<Storage.Rec>?>(null, camId) {
+        value = withContext(Dispatchers.IO) { Storage.list(ctx).filter { it.camId == camId }.sortedBy { it.start } }
+    }
+    val list = loaded
+    if (list == null) {
+        Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        return
+    }
+    var index by remember(list) { mutableIntStateOf(list.indexOfFirst { it.file.path == path }.coerceAtLeast(0)) }
     val rec = list.getOrNull(index)
     if (rec == null) {
         LaunchedEffect(Unit) { onBack() }
