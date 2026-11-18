@@ -11,8 +11,8 @@ import org.videolan.libvlc.MediaPlayer
 
 /** Фоновое наблюдение за одной камерой: отдельный лёгкий плеер без экрана → кадры → FaceEngine. */
 class FaceWatcher(val camera: Camera, val hd: Boolean) {
-    private val w = if (hd) 1280 else 960
-    private val h = if (hd) 720 else 540
+    private val w = if (hd) 1920 else 1280
+    private val h = if (hd) 1080 else 720
     private val main = Handler(Looper.getMainLooper())
     private var player: MediaPlayer? = null
     @Volatile
@@ -25,7 +25,7 @@ class FaceWatcher(val camera: Camera, val hd: Boolean) {
     fun start() {
         VlcBg.run {
             val g = FrameGrabber(
-                w, h, intervalMs = 600,
+                w, h, intervalMs = 800,
                 wants = { FaceEngine.canAccept(camera.id) },
                 onFrame = { bmp -> FaceEngine.submit(camera, bmp, content) },
             )

@@ -11,6 +11,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
 import android.os.Build
@@ -44,6 +45,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -53,15 +55,34 @@ import kotlin.math.sqrt
  *  1) ML Kit Face Detection — находит лица и глаза в кадре;
  *  2) FaceNet-512 (TensorFlow Lite) — превращает выровненное лицо 160×160 в «отпечаток» из 512 чисел.
  * Отпечатки сравниваются с базой людей (косинусное сходство).
+ *
+ * Чтобы ловить людей по всему кадру (в том числе мелких и по краям), кадр анализируется
+ * не целиком одним проходом, а ещё и перекрывающимися плитками: в плитке дальнее лицо
+ * занимает бóльшую долю картинки, и детектор его замечает. Дубли убираются по IoU.
+ * Для устойчивого «отпечатка» лицо выравнивается по глазам и усредняется с зеркальной копией.
  */
 object FaceEngine {
     private const val SIZE = 160
     private const val EMB = 512
-    private const val MIN_RECOG = 40 // px — меньше уже не узнать
-    private const val MIN_EVENT = 56 // px — меньше не создаём событие о незнакомом
+    private const val MIN_RECOG = 36  // px на кадре — меньше уже не узнать
+    private const val MIN_EVENT = 52  // px — меньше не создаём событие о незнакомом
+    private const val MARGIN = 0.05f  // запас лучшего совпадения над вторым (меньше — риск спутать людей)
+    private const val TILE_MIN = 900  // от этой ширины/высоты включается разбиение на плитки
+    private const val MAX_FACES = 12  // верхний предел лиц за кадр
 
     class Box(val rect: RectF, val label: String?, val known: Boolean)
     class Live(val time: Long, val boxes: List<Box>)
+
+    /** Найденное лицо в координатах полного кадра. */
+    private class Det(
+        val box: RectF,
+        val leftEye: PointF?,
+        val rightEye: PointF?,
+        val angleY: Float,
+        val angleZ: Float,
+    ) {
+        val area get() = box.width() * box.height()
+    }
 
     /** Последние найденные лица по камерам — для рамок в живом просмотре. */
     val live = MutableStateFlow<Map<String, Live>>(emptyMap())
@@ -83,7 +104,7 @@ object FaceEngine {
             FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                .setMinFaceSize(0.03f)
+                .setMinFaceSize(0.08f)
                 .build()
         )
     }
@@ -92,7 +113,7 @@ object FaceEngine {
             FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                .setMinFaceSize(0.08f)
+                .setMinFaceSize(0.04f)
                 .build()
         )
     }
@@ -132,48 +153,147 @@ object FaceEngine {
     }
 
     private fun analyze(cam: Camera, frame: Bitmap, content: RectF) {
-        val faces = Tasks.await(fastDetector.process(InputImage.fromBitmap(frame, 0)), 5, TimeUnit.SECONDS)
+        val dets = detectAll(frame)
         val boxes = ArrayList<Box>()
-        for (f in faces) {
-            val b = f.boundingBox
+        for (d in dets) {
+            val b = d.box
             val nr = RectF(
                 (b.left - content.left) / content.width(),
                 (b.top - content.top) / content.height(),
                 (b.right - content.left) / content.width(),
                 (b.bottom - content.top) / content.height(),
             )
-            if (b.width() < MIN_RECOG) {
+            val fw = min(b.width(), b.height())
+            if (fw < MIN_RECOG) {
                 boxes += Box(nr, null, false)
                 continue
             }
-            val aligned = align(frame, f)
-            val emb = embed(aligned)
-            val (person, score) = FaceDb.match(emb)
+            val aligned = align(frame, d)
+            val sharp = sharpnessOf(aligned)
+            val emb = embedTta(aligned)
+            val m = FaceDb.matchBest(emb)
+            // чем мельче/размытее лицо, тем строже требуем совпадения — меньше ложных узнаваний
+            val penalty = (if (fw < MIN_EVENT) 0.04f else 0f) + (if (sharp < LOW_SHARP) 0.04f else 0f)
+            val accept = m.person != null && m.best >= Prefs.faceThreshold + penalty && m.margin >= MARGIN
+            val person = if (accept) m.person else null
             boxes += Box(nr, person?.name ?: "Незнакомый", person != null)
-            val frontal = abs(f.headEulerAngleY) < 30 && abs(f.headEulerAngleZ) < 30 && b.width() >= MIN_EVENT
-            if (person != null || frontal) onFace(cam, frame, b, aligned, emb, person, score)
+            val rect = Rect(b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt())
+            val frontal = abs(d.angleY) < 32 && abs(d.angleZ) < 32 && fw >= MIN_EVENT && sharp >= LOW_SHARP
+            if (person != null || frontal) onFace(cam, frame, rect, aligned, emb, person, m.best)
             aligned.recycle()
         }
         live.value = live.value + (cam.id to Live(System.currentTimeMillis(), boxes))
     }
 
-    /** Поворачивает лицо так, чтобы глаза были горизонтально, и вырезает квадрат 160×160. */
-    private fun align(src: Bitmap, f: Face): Bitmap {
-        val b = f.boundingBox
-        val l = f.getLandmark(FaceLandmark.LEFT_EYE)?.position
-        val r = f.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+    // ---------- детекция по всему кадру ----------
+
+    /** Полный кадр + перекрывающиеся плитки, дубли убираются по IoU. */
+    private fun detectAll(frame: Bitmap): List<Det> {
+        val out = ArrayList<Det>()
+        out += detectIn(frame, 0, 0, frame.width, frame.height, accurateDetector)
+        if (frame.width >= TILE_MIN) {
+            for (t in tiles(frame.width, frame.height)) {
+                out += detectIn(frame, t.left, t.top, t.width(), t.height(), fastDetector)
+            }
+        }
+        return nms(out).sortedByDescending { it.area }.take(MAX_FACES)
+    }
+
+    /** Детектирует лица в прямоугольнике кадра и переводит координаты в координаты полного кадра. */
+    private fun detectIn(frame: Bitmap, ox: Int, oy: Int, w: Int, h: Int, det: FaceDetector): List<Det> {
+        if (w <= 0 || h <= 0) return emptyList()
+        val whole = ox == 0 && oy == 0 && w == frame.width && h == frame.height
+        val bmp = if (whole) frame else Bitmap.createBitmap(frame, ox, oy, w, h)
+        return try {
+            val faces = Tasks.await(det.process(InputImage.fromBitmap(bmp, 0)), 5, TimeUnit.SECONDS)
+            faces.map { f ->
+                val b = f.boundingBox
+                val le = f.getLandmark(FaceLandmark.LEFT_EYE)?.position
+                val re = f.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+                Det(
+                    RectF(
+                        (b.left + ox).toFloat().coerceIn(0f, frame.width.toFloat()),
+                        (b.top + oy).toFloat().coerceIn(0f, frame.height.toFloat()),
+                        (b.right + ox).toFloat().coerceIn(0f, frame.width.toFloat()),
+                        (b.bottom + oy).toFloat().coerceIn(0f, frame.height.toFloat()),
+                    ),
+                    le?.let { PointF(it.x + ox, it.y + oy) },
+                    re?.let { PointF(it.x + ox, it.y + oy) },
+                    f.headEulerAngleY, f.headEulerAngleZ,
+                )
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        } finally {
+            if (!whole) bmp.recycle()
+        }
+    }
+
+    private fun tiles(w: Int, h: Int): List<Rect> {
+        val cols = if (w >= 1000) 3 else 2
+        val rows = 2
+        val stepX = w / cols
+        val stepY = h / rows
+        val ox = (stepX * 0.2f).toInt()
+        val oy = (stepY * 0.2f).toInt()
+        val list = ArrayList<Rect>()
+        for (r in 0 until rows) for (c in 0 until cols) {
+            val l = max(0, c * stepX - ox)
+            val t = max(0, r * stepY - oy)
+            val rt = min(w, (c + 1) * stepX + ox)
+            val bt = min(h, (r + 1) * stepY + oy)
+            list += Rect(l, t, rt, bt)
+        }
+        return list
+    }
+
+    /** Non-Maximum Suppression: оставляем крупнейшее из пересекающихся лиц. */
+    private fun nms(dets: List<Det>): List<Det> {
+        val sorted = dets.sortedByDescending { it.area }
+        val kept = ArrayList<Det>()
+        for (d in sorted) {
+            if (kept.none { iou(it.box, d.box) > 0.4f }) kept += d
+        }
+        return kept
+    }
+
+    private fun iou(a: RectF, b: RectF): Float {
+        val l = max(a.left, b.left); val t = max(a.top, b.top)
+        val r = min(a.right, b.right); val bo = min(a.bottom, b.bottom)
+        if (r <= l || bo <= t) return 0f
+        val inter = (r - l) * (bo - t)
+        val union = a.width() * a.height() + b.width() * b.height() - inter
+        return if (union <= 0f) 0f else inter / union
+    }
+
+    // ---------- выравнивание и отпечаток ----------
+
+    private const val LOW_SHARP = 60f
+
+    /**
+     * Поворачивает лицо так, чтобы глаза были горизонтально, и вырезает квадрат 160×160.
+     * Масштаб и центр берутся от расстояния между глазами — кроп получается одинаковым
+     * для одного человека независимо от того, как детектор очертил рамку.
+     */
+    private fun align(src: Bitmap, d: Det): Bitmap {
+        val b = d.box
         var angle = 0f
-        var cx = b.exactCenterX()
-        var cy = b.exactCenterY()
+        var cx = b.centerX()
+        var cy = b.centerY()
+        var size = max(b.width(), b.height()) * 1.25f
+        val l = d.leftEye; val r = d.rightEye
         if (l != null && r != null) {
             val a = if (l.x < r.x) l else r
             val c = if (l.x < r.x) r else l
-            angle = Math.toDegrees(atan2((c.y - a.y).toDouble(), (c.x - a.x).toDouble())).toFloat()
-            // центр между глазами чуть выше центра лица — сдвигаем к центру рамки по горизонтали
-            cx = (cx + (a.x + c.x) / 2f) / 2f
+            val iod = hypot((c.x - a.x).toDouble(), (c.y - a.y).toDouble()).toFloat()
+            if (iod > 1f) {
+                angle = Math.toDegrees(atan2((c.y - a.y).toDouble(), (c.x - a.x).toDouble())).toFloat()
+                cx = (a.x + c.x) / 2f
+                cy = (a.y + c.y) / 2f + iod * 0.30f // чуть ниже глаз, к носу
+                size = iod * 3.2f
+            }
         }
-        val size = max(b.width(), b.height()) * 1.2f
-        cy += b.height() * 0.02f
+        if (size < 1f) size = max(b.width(), b.height()).coerceAtLeast(1f)
         val out = Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ARGB_8888)
         val m = Matrix().apply {
             postTranslate(-cx, -cy)
@@ -185,8 +305,37 @@ object FaceEngine {
         return out
     }
 
-    private fun embed(face: Bitmap): FloatArray {
+    private fun luma(p: Int) = ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
+
+    /** Резкость: средний квадрат градиента яркости. Размытые/мелкие лица дают низкое значение. */
+    private fun sharpnessOf(face: Bitmap): Float {
         face.getPixels(pixels, 0, SIZE, 0, 0, SIZE, SIZE)
+        var acc = 0.0
+        var cnt = 0
+        for (y in 1 until SIZE) for (x in 1 until SIZE) {
+            val i = y * SIZE + x
+            val gx = luma(pixels[i]) - luma(pixels[i - 1])
+            val gy = luma(pixels[i]) - luma(pixels[i - SIZE])
+            acc += (gx * gx + gy * gy).toDouble()
+            cnt++
+        }
+        return if (cnt == 0) 0f else (acc / cnt).toFloat()
+    }
+
+    private fun runModel(): FloatArray {
+        input.rewind()
+        val out = Array(1) { FloatArray(EMB) }
+        interp().run(input, out)
+        val v = out[0]
+        var norm = 0f
+        for (x in v) norm += x * x
+        norm = sqrt(norm).coerceAtLeast(1e-6f)
+        for (i in v.indices) v[i] /= norm
+        return v
+    }
+
+    /** Заполняет вход модели из [pixels]; при mirror=true отражает по горизонтали. */
+    private fun fillInput(mirror: Boolean) {
         var sum = 0.0
         var sq = 0.0
         for (p in pixels) {
@@ -200,15 +349,28 @@ object FaceEngine {
         val mean = sum / n
         val std = max(sqrt(max(sq / n - mean * mean, 0.0)), 1.0 / sqrt(n.toDouble()))
         input.rewind()
-        for (p in pixels) {
-            input.putFloat((((p shr 16) and 0xFF) - mean).toFloat() / std.toFloat())
-            input.putFloat((((p shr 8) and 0xFF) - mean).toFloat() / std.toFloat())
-            input.putFloat(((p and 0xFF) - mean).toFloat() / std.toFloat())
+        val m = mean.toFloat()
+        val s = std.toFloat()
+        for (y in 0 until SIZE) {
+            val row = y * SIZE
+            for (x in 0 until SIZE) {
+                val p = pixels[row + (if (mirror) SIZE - 1 - x else x)]
+                input.putFloat((((p shr 16) and 0xFF) - m) / s)
+                input.putFloat((((p shr 8) and 0xFF) - m) / s)
+                input.putFloat(((p and 0xFF) - m) / s)
+            }
         }
         input.rewind()
-        val out = Array(1) { FloatArray(EMB) }
-        interp().run(input, out)
-        val v = out[0]
+    }
+
+    /** Отпечаток лица, усреднённый с зеркальной копией (устойчивее к ракурсу и шуму). */
+    private fun embedTta(face: Bitmap): FloatArray {
+        face.getPixels(pixels, 0, SIZE, 0, 0, SIZE, SIZE)
+        fillInput(false)
+        val a = runModel()
+        fillInput(true)
+        val b = runModel()
+        val v = FloatArray(EMB) { a[it] + b[it] }
         var norm = 0f
         for (x in v) norm += x * x
         norm = sqrt(norm).coerceAtLeast(1e-6f)
@@ -222,8 +384,15 @@ object FaceEngine {
             val res = runCatching {
                 val faces = Tasks.await(accurateDetector.process(InputImage.fromBitmap(photo, 0)), 10, TimeUnit.SECONDS)
                 val f = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() } ?: return@runCatching null
-                val aligned = align(photo, f)
-                embed(aligned) to aligned
+                val b = f.boundingBox
+                val det = Det(
+                    RectF(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat()),
+                    f.getLandmark(FaceLandmark.LEFT_EYE)?.position,
+                    f.getLandmark(FaceLandmark.RIGHT_EYE)?.position,
+                    f.headEulerAngleY, f.headEulerAngleZ,
+                )
+                val aligned = align(photo, det)
+                embedTta(aligned) to aligned
             }.getOrNull()
             cont.resume(res)
         }

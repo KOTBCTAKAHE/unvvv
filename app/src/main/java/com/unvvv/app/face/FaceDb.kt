@@ -13,6 +13,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.Executors
+import kotlin.math.min
 
 class Person(
     val id: String,
@@ -88,22 +89,39 @@ object FaceDb {
         return s
     }
 
-    /** Лучшее совпадение среди известных людей. person == null, если ниже порога. */
-    fun match(e: FloatArray): Pair<Person?, Float> {
+    /** Результат сравнения с базой: лучший человек, его сходство и отрыв от второго. */
+    class MatchResult(val person: Person?, val best: Float, val margin: Float)
+
+    /** Сходство отпечатка [e] с человеком [p]: среднее из нескольких лучших образцов. */
+    private fun personScore(p: Person, e: FloatArray): Float {
+        if (p.embs.isEmpty()) return -1f
+        val scores = p.embs.map { dot(it, e) }.sortedDescending()
+        val k = min(5, scores.size)
+        val top = scores.take(k)
+        // один очень близкий образец или устойчивое среднее — берём лучшее из двух
+        return maxOf(scores[0] - 0.04f, top.average().toFloat())
+    }
+
+    /**
+     * Лучшее совпадение среди известных людей, с отрывом от второго кандидата.
+     * Порог и проверку отрыва применяет вызывающий код (FaceEngine), учитывая качество лица.
+     */
+    fun matchBest(e: FloatArray): MatchResult {
         var best: Person? = null
         var bestScore = -1f
+        var secondScore = -1f
         for (p in people.value) {
-            // среднее из 3 лучших образцов устойчивее, чем один максимум
-            val scores = p.embs.map { dot(it, e) }.sortedDescending()
-            if (scores.isEmpty()) continue
-            val top = scores.take(3)
-            val s = maxOf(scores[0] - 0.05f, top.average().toFloat())
+            val s = personScore(p, e)
             if (s > bestScore) {
+                secondScore = bestScore
                 bestScore = s
                 best = p
+            } else if (s > secondScore) {
+                secondScore = s
             }
         }
-        return if (best != null && bestScore >= Prefs.faceThreshold) best to bestScore else null to bestScore.coerceAtLeast(0f)
+        val margin = if (secondScore < 0f) 1f else bestScore - secondScore
+        return MatchResult(best, bestScore.coerceAtLeast(0f), margin)
     }
 
     // ---------- люди ----------
