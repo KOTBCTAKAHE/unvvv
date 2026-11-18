@@ -88,6 +88,7 @@ import com.unvvv.app.face.FaceDb
 import com.unvvv.app.face.FaceEngine
 import com.unvvv.app.face.FaceEvent
 import com.unvvv.app.face.Person
+import com.unvvv.app.face.Sample
 import com.unvvv.app.record.RecordService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -152,19 +153,39 @@ private fun loadPhoto(ctx: Context, uri: Uri): Bitmap? = runCatching {
     if (deg == 0f) bmp else Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(deg) }, true)
 }.getOrNull()
 
-/** Обрабатывает фото → отпечатки лиц. Возвращает (отпечатки, файл миниатюры). */
-private suspend fun processPhotos(ctx: Context, uris: List<Uri>): Pair<List<FloatArray>, String?> {
-    val embs = ArrayList<FloatArray>()
+/** Результат обработки фото: образцы, миниатюра и причины отказа по остальным фото. */
+private class Processed(val samples: List<Sample>, val thumb: String?, val rejected: List<String>) {
+    fun summary(total: Int): String {
+        val base = "Принято фото: ${samples.size} из $total"
+        if (rejected.isEmpty()) return base
+        val why = rejected.groupingBy { it }.eachCount().entries.joinToString(", ") { "${it.key} — ${it.value}" }
+        return "$base. Пропущены: $why"
+    }
+}
+
+/** Обрабатывает фото: находит лицо, проверяет качество, выравнивает и считает отпечаток. */
+private suspend fun processPhotos(ctx: Context, uris: List<Uri>): Processed {
+    val samples = ArrayList<Sample>()
+    val rejected = ArrayList<String>()
     var thumb: String? = null
     for (u in uris) {
-        val bmp = withContext(Dispatchers.IO) { loadPhoto(ctx, u) } ?: continue
-        val r = FaceEngine.enroll(bmp) ?: continue
-        embs += r.first
-        if (thumb == null) thumb = withContext(Dispatchers.IO) { FaceDb.saveJpeg(r.second, 90) }
-        r.second.recycle()
+        val bmp = withContext(Dispatchers.IO) { loadPhoto(ctx, u) }
+        if (bmp == null) {
+            rejected += "не открылось"
+            continue
+        }
+        when (val r = FaceEngine.enroll(bmp)) {
+            is FaceEngine.Enroll.Ok -> {
+                val img = withContext(Dispatchers.IO) { FaceDb.saveJpeg(r.chip, 92) }
+                if (thumb == null) thumb = img
+                samples += Sample(r.emb, img)
+                r.chip.recycle()
+            }
+            is FaceEngine.Enroll.Fail -> rejected += r.reason
+        }
         bmp.recycle()
     }
-    return embs to thumb
+    return Processed(samples, thumb, rejected)
 }
 
 // ---------- экран ----------
@@ -189,6 +210,8 @@ fun FacesScreen() {
     val shown = if (onlyUnknown) events.filter { it.personId == null } else events
 
     val unknownCount = events.count { it.personId == null }
+    val migration by FaceEngine.migration.collectAsState()
+    val engineError by FaceEngine.error.collectAsState()
     Scaffold(
         containerColor = Color.Transparent,
         topBar = {
@@ -201,6 +224,39 @@ fun FacesScreen() {
         },
     ) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            migration?.let { (done, total) ->
+                item(key = "migration") {
+                    Panel(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        SettingRow(
+                            "Обновляю базу под новую нейросеть",
+                            "Пересчитываю сохранённые лица: $done из $total",
+                            Icons.Default.Face,
+                            Ui.Accent,
+                        )
+                        Meter(if (total > 0) done.toFloat() / total else 0f)
+                    }
+                }
+            }
+            engineError?.let { err ->
+                item(key = "error") {
+                    Panel(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        SettingRow("Нейросеть не загрузилась", err, Icons.Default.Face, RecRed)
+                    }
+                }
+            }
+            val noSamples = people.filter { it.samples.isEmpty() }
+            if (migration == null && noSamples.isNotEmpty()) {
+                item(key = "nosamples") {
+                    Panel(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), onClick = { openPerson = noSamples.first() }) {
+                        SettingRow(
+                            "Нужны фото: " + noSamples.joinToString { it.name },
+                            "Для них нет образцов под новую нейросеть. Добавьте 5–10 фото или отметьте их в событиях.",
+                            Icons.Default.PersonAdd,
+                            Ui.Warning,
+                        )
+                    }
+                }
+            }
             item(key = "h_cams") { SectionLabel("Распознавание на камерах") }
             item(key = "cams") {
                 Panel(Modifier.padding(horizontal = 16.dp), spacing = 6.dp) {
@@ -280,7 +336,11 @@ fun FacesScreen() {
                                 }
                                 Spacer(Modifier.height(6.dp))
                                 Text(p.name, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("${p.embs.size} фото", style = MaterialTheme.typography.labelSmall.merge(Ui.Tabular), color = Ui.Muted)
+                                if (p.samples.isEmpty()) {
+                                    Text("нужны фото", style = MaterialTheme.typography.labelSmall, color = RecRed)
+                                } else {
+                                    Text("${p.samples.size} фото", style = MaterialTheme.typography.labelSmall.merge(Ui.Tabular), color = Ui.Muted)
+                                }
                             }
                         }
                     }
@@ -467,13 +527,13 @@ private fun AddPersonDialog(onDismiss: () -> Unit) {
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         busy = true
         scope.launch {
-            val (embs, thumb) = processPhotos(ctx, uris)
+            val r = processPhotos(ctx, uris)
             busy = false
-            if (embs.isEmpty()) {
-                Toast.makeText(ctx, "На фото не найдено лиц", Toast.LENGTH_LONG).show()
+            if (r.samples.isEmpty()) {
+                Toast.makeText(ctx, "Ни одно фото не подошло. ${r.summary(uris.size)}", Toast.LENGTH_LONG).show()
             } else {
-                FaceDb.createPerson(name, embs, thumb)
-                Toast.makeText(ctx, "Добавлено: лиц ${embs.size} из ${uris.size} фото", Toast.LENGTH_LONG).show()
+                FaceDb.createPerson(name, r.samples, r.thumb)
+                Toast.makeText(ctx, r.summary(uris.size), Toast.LENGTH_LONG).show()
                 onDismiss()
             }
         }
@@ -485,7 +545,7 @@ private fun AddPersonDialog(onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("Имя") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Text(
-                    "Выберите 3–10 фото, где хорошо видно лицо (анфас, разное освещение). Можно также отмечать людей прямо в событиях с камер.",
+                    "Выберите 5–10 фото, где хорошо видно лицо: анфас и вполоборота, разное освещение, с очками и без. Мелкие и профильные лица будут пропущены. Самые точные образцы — снимки с ваших же камер: отмечайте людей в событиях.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )
@@ -516,13 +576,10 @@ private fun PersonDialog(p: Person, onDismiss: () -> Unit) {
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         busy = true
         scope.launch {
-            val (embs, thumb) = processPhotos(ctx, uris)
+            val r = processPhotos(ctx, uris)
             busy = false
-            if (embs.isEmpty()) Toast.makeText(ctx, "На фото не найдено лиц", Toast.LENGTH_LONG).show()
-            else {
-                FaceDb.addSamples(p.id, embs, thumb)
-                Toast.makeText(ctx, "Добавлено лиц: ${embs.size}", Toast.LENGTH_SHORT).show()
-            }
+            if (r.samples.isNotEmpty()) FaceDb.addSamples(p.id, r.samples, r.thumb)
+            Toast.makeText(ctx, r.summary(uris.size), Toast.LENGTH_LONG).show()
         }
     }
     AlertDialog(
@@ -537,7 +594,17 @@ private fun PersonDialog(p: Person, onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("Имя") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Text("Образцов лица: ${p.embs.size}", color = MaterialTheme.colorScheme.secondary)
+                Text(
+                    if (p.samples.isEmpty()) "Нет образцов — добавьте фото, иначе человек не будет узнаваться."
+                    else "Образцов лица: ${p.samples.size}" + if (p.autoCount > 0) " (с камер: ${p.autoCount})" else "",
+                    color = if (p.samples.isEmpty()) RecRed else MaterialTheme.colorScheme.secondary,
+                )
+                if (p.autoCount > 0) {
+                    TextButton(onClick = {
+                        FaceDb.clearAuto(p.id)
+                        Toast.makeText(ctx, "Образцы с камер удалены", Toast.LENGTH_SHORT).show()
+                    }) { Text("Сбросить образцы с камер") }
+                }
                 OutlinedButton(
                     enabled = !busy,
                     onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
@@ -575,7 +642,8 @@ private fun PersonDialog(p: Person, onDismiss: () -> Unit) {
 
 @Composable
 private fun FaceSettingsDialog(onDismiss: () -> Unit) {
-    var th by remember { mutableFloatStateOf(Prefs.faceThreshold) }
+    var th by remember { mutableFloatStateOf(Prefs.faceStrict) }
+    var learn by remember { mutableStateOf(Prefs.faceAutoLearn) }
     var nu by remember { mutableStateOf(Prefs.notifyUnknown) }
     var nk by remember { mutableStateOf(Prefs.notifyKnown) }
     var rec by remember { mutableStateOf(Prefs.recordOnUnknown) }
@@ -597,16 +665,31 @@ private fun FaceSettingsDialog(onDismiss: () -> Unit) {
         title = { Text("Распознавание") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Строгость совпадения: ${(th * 100).roundToInt()}%")
-                Slider(th, { th = it }, valueRange = 0.40f..0.80f, steps = 7, onValueChangeFinished = { Prefs.faceThreshold = th })
                 Text(
-                    "Если знакомых путает с чужими — увеличьте. Если своих не узнаёт — уменьшите или добавьте больше фото.",
+                    "Строгость: ${(th * 100).roundToInt()} — " + when {
+                        th < 0.37f -> "мягко (больше узнаёт, чаще ошибается)"
+                        th <= 0.46f -> "рекомендуется"
+                        else -> "строго (почти не ошибается, но реже узнаёт)"
+                    }
+                )
+                Slider(th, { th = it }, valueRange = 0.32f..0.55f, steps = 22, onValueChangeFinished = { Prefs.faceStrict = th })
+                Text(
+                    "Если путает чужих со знакомыми — увеличьте. Если своих не узнаёт — уменьшите или добавьте больше фото, лучше с ваших камер.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )
+                SwitchRow("Самообучение", "Уверенно узнанные лица с камер пополняют образцы человека", learn) {
+                    learn = it
+                    Prefs.faceAutoLearn = it
+                }
                 SwitchRow("Уведомлять о незнакомых", "С фото кадра", nu) { nu = it; Prefs.notifyUnknown = it }
                 SwitchRow("Уведомлять о знакомых", "Не чаще раза в 5 минут на человека", nk) { nk = it; Prefs.notifyKnown = it }
                 SwitchRow("Запись при незнакомом", "Камера пишет 2 минуты", rec) { rec = it; Prefs.recordOnUnknown = it }
+                Text(
+                    "Нейросети: SCRFD (поиск лиц по всему кадру) и ArcFace (отпечаток лица), InsightFace.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
                 SwitchRow("Анализ в HD", "Видит лица дальше, но сильнее греет телефон", hd) {
                     hd = it
                     Prefs.faceHd = it

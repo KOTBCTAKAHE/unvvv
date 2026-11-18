@@ -50,10 +50,18 @@ object Prefs {
 
     // ---- Распознавание лиц ----
 
-    /** Порог сходства лиц (косинус), 0.40…0.80. Выше — строже. */
-    var faceThreshold: Float
-        get() = sp.getFloat("faceThreshold", 0.60f)
-        set(v) = sp.edit().putFloat("faceThreshold", v).apply()
+    /**
+     * Порог узнавания для ArcFace (0.32…0.55). Выше — строже.
+     * 0.42 по замерам на LFW ≈ 0.1% ложных узнаваний незнакомцев при 80 людях в базе.
+     */
+    var faceStrict: Float
+        get() = sp.getFloat("faceStrict", 0.42f)
+        set(v) = sp.edit().putFloat("faceStrict", v).apply()
+
+    /** Самообучение: уверенно узнанные лица с камер пополняют образцы человека. */
+    var faceAutoLearn: Boolean
+        get() = bool("faceAutoLearn", true)
+        set(v) = putBool("faceAutoLearn", v)
 
     var notifyUnknown: Boolean
         get() = bool("notifyUnknown", true)
