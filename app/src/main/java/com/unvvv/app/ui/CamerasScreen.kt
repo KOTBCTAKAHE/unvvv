@@ -24,10 +24,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -77,12 +81,31 @@ fun CamerasScreen(onOpen: (String) -> Unit, onScan: () -> Unit) {
     var cols by remember { mutableIntStateOf(Prefs.gridCols) }
     var edit by remember { mutableStateOf<Camera?>(null) }
     var adding by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
+    var importText by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
+
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        val text = runCatching {
+            ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        }.getOrNull()
+        if (text.isNullOrBlank()) {
+            Toast.makeText(ctx, "Не удалось прочитать файл", Toast.LENGTH_SHORT).show()
+        } else {
+            importText = text
+            importing = true
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Камеры") },
                 actions = {
+                    IconButton(onClick = { importText = ""; importing = true }) {
+                        Icon(Icons.Default.UploadFile, "Импорт списка")
+                    }
                     IconButton(onClick = onScan) { Icon(Icons.Default.Search, "Поиск в сети") }
                     IconButton(onClick = {
                         cols = if (cols >= 3) 1 else cols + 1
@@ -122,6 +145,12 @@ fun CamerasScreen(onOpen: (String) -> Unit, onScan: () -> Unit) {
                 OutlinedButton(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) {
                     Text("Добавить вручную")
                 }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { importText = ""; importing = true }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.UploadFile, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Импорт списком (ip:пароль)")
+                }
             }
         } else {
             LazyVerticalGrid(
@@ -147,6 +176,77 @@ fun CamerasScreen(onOpen: (String) -> Unit, onScan: () -> Unit) {
 
     if (adding) CameraDialog(null, onDismiss = { adding = false })
     edit?.let { CameraDialog(it, onDismiss = { edit = null }) }
+
+    if (importing) {
+        ImportDialog(
+            initial = importText,
+            onPickFile = { filePicker.launch("*/*") },
+            onImport = { text ->
+                val r = CameraRepo.importText(text)
+                importing = false
+                RecordService.ensure(ctx)
+                val msg = when {
+                    r.added == 0 && r.skipped == 0 -> "Ничего не найдено. Формат строки: ip:пароль"
+                    r.added == 0 -> "Все ${r.skipped} уже добавлены"
+                    r.skipped > 0 -> "Добавлено ${r.added}, пропущено (дубли) ${r.skipped}"
+                    else -> "Добавлено камер: ${r.added}"
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            },
+            onDismiss = { importing = false },
+        )
+    }
+}
+
+/** Быстрый импорт списка камер: вставить текст или выбрать .txt-файл. Формат строки — `ip:пароль`. */
+@Composable
+private fun ImportDialog(
+    initial: String,
+    onPickFile: () -> Unit,
+    onImport: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember(initial) { mutableStateOf(initial) }
+    val preview = remember(text) { com.unvvv.app.data.parseCameraList(text).distinctBy { it.host } }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Импорт списка камер") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Одна строка — одна камера, формат ip:пароль. " +
+                        "Логин admin, порт 554, канал 1 — по умолчанию UNV. " +
+                        "Пустые строки и строки с «#» пропускаются.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                OutlinedButton(onClick = onPickFile, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.UploadFile, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Выбрать файл .txt")
+                }
+                OutlinedTextField(
+                    text, { text = it },
+                    label = { Text("Список") },
+                    placeholder = { Text("192.168.1.10:parol123\n192.168.1.11:parol123") },
+                    modifier = Modifier.fillMaxWidth().height(180.dp),
+                )
+                Text(
+                    if (preview.isEmpty()) "Распознано камер: 0"
+                    else "Распознано камер: ${preview.size} (первая: ${preview.first().host})",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = preview.isNotEmpty(), onClick = { onImport(text) }) {
+                Text("Добавить (${preview.size})")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)

@@ -117,4 +117,40 @@ object CameraRepo {
     fun remove(id: String) = save(_cameras.value.filterNot { it.id == id })
 
     fun setAllRecord(on: Boolean) = save(_cameras.value.map { it.copy(record = on) })
+
+    /**
+     * Импорт списка камер из текста. Камеры с уже существующим IP пропускаются,
+     * чтобы не плодить дубликаты.
+     */
+    fun importText(text: String): ImportResult {
+        val parsed = parseCameraList(text).distinctBy { it.host }
+        val existing = _cameras.value.map { it.host }.toSet()
+        val fresh = parsed.filter { it.host !in existing }
+        if (fresh.isNotEmpty()) addAll(fresh)
+        return ImportResult(added = fresh.size, skipped = parsed.size - fresh.size)
+    }
 }
+
+data class ImportResult(val added: Int, val skipped: Int)
+
+/**
+ * Разбирает список камер из текста. Формат строки — `ip:пароль`
+ * (пароль может содержать двоеточия — берётся всё после первого «:»).
+ * Остальные параметры — по умолчанию UNV: логин admin, порт 554, канал 1.
+ *
+ * - пустые строки и строки, начинающиеся с «#», пропускаются;
+ * - пароль можно не указывать (просто `ip`);
+ * - лишние пробелы и префикс `rtsp://` отбрасываются.
+ */
+fun parseCameraList(text: String): List<Camera> =
+    text.lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+        .mapNotNull { line ->
+            val raw = line.removePrefix("rtsp://").removePrefix("http://").trim()
+            val host = raw.substringBefore(':').trim()
+            val pass = if (':' in raw) raw.substringAfter(':').trim() else ""
+            if (host.isEmpty()) null
+            else Camera(name = host, host = host, user = "admin", pass = pass)
+        }
+        .toList()
