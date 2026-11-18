@@ -25,6 +25,11 @@ android {
             storePassword = "unvvv123"
             keyAlias = "unvvv"
             keyPassword = "unvvv123"
+            // Подписываем всеми схемами: v1 (JAR) нужен, чтобы сертификат видели
+            // файловые менеджеры/антивирусы/проверялки APK; v2/v3 — для самой установки.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
