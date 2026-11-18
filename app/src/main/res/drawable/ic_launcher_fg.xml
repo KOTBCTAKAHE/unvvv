@@ -1,19 +1,54 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- camera body -->
+    <!-- внешнее кольцо объектива -->
+    <path android:pathData="M24,54 a30,30 0 1,0 60,0 a30,30 0 1,0 -60,0 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="30"
+                android:startY="28"
+                android:endX="80"
+                android:endY="82"
+                android:startColor="#5CE1E6"
+                android:endColor="#7C9CFF" />
+        </aapt:attr>
+    </path>
+    <!-- тёмный корпус -->
     <path
-        android:fillColor="#38BDF8"
-        android:pathData="M30,40 h36 a6,6 0 0 1 6,6 v16 a6,6 0 0 1 -6,6 h-36 a6,6 0 0 1 -6,-6 v-16 a6,6 0 0 1 6,-6 z" />
-    <!-- lens side -->
+        android:fillColor="#07090D"
+        android:pathData="M33,54 a21,21 0 1,0 42,0 a21,21 0 1,0 -42,0 z" />
+    <!-- линза -->
+    <path android:pathData="M41,54 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="50"
+                android:centerY="50"
+                android:gradientRadius="16"
+                android:startColor="#1F4E6B"
+                android:endColor="#0B1622" />
+        </aapt:attr>
+    </path>
+    <!-- зрачок -->
     <path
-        android:fillColor="#38BDF8"
-        android:pathData="M74,48 l10,-6 v24 l-10,-6 z" />
-    <!-- rec dot -->
+        android:fillColor="#5CE1E6"
+        android:fillAlpha="0.9"
+        android:pathData="M48,54 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 z" />
+    <!-- блик -->
     <path
-        android:fillColor="#EF4444"
-        android:pathData="M38,54 m-5,0 a5,5 0 1 0 10,0 a5,5 0 1 0 -10,0" />
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.85"
+        android:pathData="M45.5,48.5 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0 z" />
+    <!-- индикатор записи -->
+    <path
+        android:fillColor="#07090D"
+        android:pathData="M66.5,36 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0 z" />
+    <path
+        android:fillColor="#FF4D5E"
+        android:pathData="M68.2,36 a3.8,3.8 0 1,0 7.6,0 a3.8,3.8 0 1,0 -7.6,0 z" />
 </vector>

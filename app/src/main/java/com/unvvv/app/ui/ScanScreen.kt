@@ -1,6 +1,32 @@
 package com.unvvv.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -83,63 +109,87 @@ fun ScanScreen(onBack: () -> Unit) {
     val fresh = list.filter { it.ip !in existing }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                title = { Text("Поиск камер") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } },
-                actions = {
-                    IconButton(enabled = !scanning, onClick = { round++ }) { Icon(Icons.Default.Refresh, "Повторить") }
-                },
-            )
+            AppHeader(
+                title = "Поиск камер",
+                subtitle = if (scanning) "ONVIF и RTSP 554 в вашей сети" else "Найдено устройств: ${list.size}",
+                onBack = onBack,
+            ) {
+                HeaderAction(Icons.Default.Refresh, "Повторить", onClick = { round++ }, enabled = !scanning)
+            }
         },
         bottomBar = {
             if (fresh.isNotEmpty() && !scanning) {
-                Button(
+                PrimaryButton(
+                    "Добавить все новые (${fresh.size})",
                     onClick = { addAll = true },
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(16.dp),
-                ) { Text("Добавить все новые (${fresh.size})") }
+                    icon = Icons.Default.Add,
+                )
             }
         },
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
-            if (scanning) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (noWifi) {
-                Card(Modifier.fillMaxWidth().padding(12.dp)) {
-                    Text(
-                        "Телефон не подключён к Wi-Fi. Камеры ищутся только в локальной сети — подключитесь к той же сети, что и камеры.",
-                        Modifier.padding(12.dp),
+        LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            item(key = "radar") { Radar(scanning, list.size) }
+            if (noWifi) item(key = "wifi") {
+                Panel(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    SettingRow(
+                        "Нет Wi-Fi",
+                        "Камеры ищутся только в локальной сети — подключитесь к той же сети, что и камеры.",
+                        Icons.Default.WifiOff,
+                        Ui.Warning,
                     )
                 }
             }
-            Text(
-                when {
-                    scanning -> "Ищу камеры (ONVIF и порт RTSP 554)… Найдено: ${list.size}"
-                    list.isEmpty() -> "Ничего не найдено. Проверьте, что телефон в той же сети, что и камеры, или добавьте камеру вручную по IP."
-                    else -> "Найдено устройств: ${list.size}. Нажмите на устройство, чтобы добавить."
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(list, key = { it.ip }) { f ->
-                    val added = f.ip in existing
-                    ListItem(
-                        headlineContent = { Text(f.name ?: "Устройство") },
-                        supportingContent = { Text(listOfNotNull(f.ip, f.model).joinToString(" · ")) },
-                        leadingContent = { Icon(Icons.Default.Videocam, null, tint = MaterialTheme.colorScheme.primary) },
-                        trailingContent = {
-                            if (added) {
-                                Icon(Icons.Default.CheckCircle, "Добавлена", tint = MaterialTheme.colorScheme.primary)
-                            } else {
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (f.onvif) AssistChip(onClick = { addOne = f }, label = { Text("ONVIF") })
-                                    if (f.rtsp) AssistChip(onClick = { addOne = f }, label = { Text("RTSP") })
-                                }
-                            }
-                        },
-                        modifier = Modifier.clickable { addOne = f },
-                    )
+            item(key = "status") {
+                Text(
+                    when {
+                        scanning -> "Сканирую сеть…"
+                        list.isEmpty() -> "Ничего не найдено. Проверьте, что телефон в той же сети, что и камеры, или добавьте камеру вручную по IP."
+                        else -> "Нажмите на устройство, чтобы добавить."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Ui.Muted,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                )
+            }
+            items(list, key = { it.ip }) { f ->
+                val added = f.ip in existing
+                val shape = RoundedCornerShape(18.dp)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(shape)
+                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                        .border(1.dp, if (added) Ui.Success.copy(alpha = 0.35f) else Ui.Line, shape)
+                        .clickable { addOne = f }
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconBadge(Icons.Default.Videocam, if (added) Ui.Success else Ui.Accent, 44.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(f.name ?: "Устройство", style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            listOfNotNull(f.ip, f.model).joinToString(" · "),
+                            style = Ui.Mono,
+                            color = Ui.Muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    if (added) {
+                        Pill("ДОБАВЛЕНА", Ui.Success)
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (f.onvif) Pill("ONVIF", Ui.Accent)
+                            if (f.rtsp) Pill("RTSP", Ui.Accent2)
+                        }
+                    }
                 }
             }
         }
@@ -177,5 +227,35 @@ fun ScanScreen(onBack: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { addAll = false }) { Text("Отмена") } },
         )
+    }
+}
+
+/** Анимированный «радар» поиска с числом найденных устройств. */
+@Composable
+private fun Radar(active: Boolean, count: Int) {
+    val t = rememberInfiniteTransition(label = "radar")
+    val p by t.animateFloat(0f, 1f, infiniteRepeatable(tween(2400, easing = LinearEasing)), label = "radarP")
+    Box(Modifier.fillMaxWidth().height(220.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(200.dp)) {
+            val r = size.minDimension / 2f
+            drawCircle(Brush.radialGradient(listOf(Ui.Accent.copy(alpha = 0.10f), Color.Transparent)), radius = r)
+            for (i in 1..3) drawCircle(Ui.Accent.copy(alpha = 0.14f), radius = r * i / 3f, style = Stroke(1.dp.toPx()))
+            drawLine(Ui.Accent.copy(alpha = 0.08f), Offset(0f, r), Offset(size.width, r), 1.dp.toPx())
+            drawLine(Ui.Accent.copy(alpha = 0.08f), Offset(r, 0f), Offset(r, size.height), 1.dp.toPx())
+            if (active) {
+                rotate(p * 360f) {
+                    drawArc(Ui.Accent.copy(alpha = 0.16f), startAngle = -60f, sweepAngle = 60f, useCenter = true)
+                    drawLine(Ui.Accent.copy(alpha = 0.7f), center, Offset(size.width, r), 2.dp.toPx())
+                }
+                for (k in 0..1) {
+                    val q = (p + k * 0.5f) % 1f
+                    drawCircle(Ui.Accent.copy(alpha = (1f - q) * 0.35f), radius = r * q, style = Stroke(2.dp.toPx()))
+                }
+            }
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("$count", style = MaterialTheme.typography.headlineLarge.merge(Ui.Tabular))
+            Text(if (active) "ищу…" else "найдено", style = MaterialTheme.typography.labelMedium, color = Ui.Muted)
+        }
     }
 }

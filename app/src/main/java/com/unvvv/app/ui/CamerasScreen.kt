@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.border
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
@@ -29,6 +31,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.UploadFile
@@ -61,6 +65,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -98,68 +103,63 @@ fun CamerasScreen(onOpen: (String) -> Unit, onScan: () -> Unit) {
         }
     }
 
+    val facesOn = cams.count { it.faces }
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                title = { Text("Камеры") },
-                actions = {
-                    IconButton(onClick = { importText = ""; importing = true }) {
-                        Icon(Icons.Default.UploadFile, "Импорт списка")
-                    }
-                    IconButton(onClick = onScan) { Icon(Icons.Default.Search, "Поиск в сети") }
-                    IconButton(onClick = {
-                        cols = if (cols >= 3) 1 else cols + 1
-                        Prefs.gridCols = cols
-                    }) { Icon(Icons.Default.GridView, "Сетка") }
-                },
-            )
+            AppHeader(
+                title = "Камеры",
+                subtitle = if (cams.isEmpty()) "Видеонаблюдение UNV" else "${cams.size} подключено · ${recording.size} пишут",
+            ) {
+                HeaderAction(Icons.Default.UploadFile, "Импорт списка", onClick = { importText = ""; importing = true })
+                HeaderAction(Icons.Default.Search, "Поиск в сети", onClick = onScan)
+                if (cams.isNotEmpty()) HeaderAction(Icons.Default.GridView, "Сетка", onClick = {
+                    cols = if (cols >= 3) 1 else cols + 1
+                    Prefs.gridCols = cols
+                })
+            }
         },
         floatingActionButton = {
-            if (cams.isNotEmpty()) FloatingActionButton(onClick = { adding = true }) {
+            if (cams.isNotEmpty()) FloatingActionButton(
+                onClick = { adding = true },
+                shape = RoundedCornerShape(20.dp),
+                containerColor = Ui.Accent,
+                contentColor = Ui.OnAccent,
+            ) {
                 Icon(Icons.Default.Add, "Добавить")
             }
         },
     ) { pad ->
         if (cams.isEmpty()) {
             Column(
-                Modifier.padding(pad).fillMaxSize().padding(32.dp),
+                Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Icon(Icons.Default.Videocam, null, Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(16.dp))
-                Text("Камер пока нет", style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Найдите камеры UNV в вашей Wi-Fi сети или добавьте по IP-адресу.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                Spacer(Modifier.height(24.dp))
-                Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Search, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Найти камеры в сети")
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Добавить вручную")
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = { importText = ""; importing = true }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.UploadFile, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Импорт списком (ip:пароль)")
+                EmptyState(
+                    Icons.Default.Videocam,
+                    "Камер пока нет",
+                    "Найдите камеры UNV в вашей Wi-Fi сети, добавьте по IP-адресу или вставьте готовый список.",
+                ) {
+                    PrimaryButton("Найти камеры в сети", onScan, Modifier.fillMaxWidth(), Icons.Default.Search)
+                    SecondaryButton("Добавить вручную", { adding = true }, Modifier.fillMaxWidth(), Icons.Default.Add)
+                    SecondaryButton("Импорт списком (ip:пароль)", { importText = ""; importing = true }, Modifier.fillMaxWidth(), Icons.Default.UploadFile)
                 }
             }
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(cols),
                 modifier = Modifier.padding(pad).fillMaxSize(),
-                contentPadding = PaddingValues(6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                item(span = { GridItemSpan(maxLineSpan) }, contentType = "stats") {
+                    Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        StatTile("${cams.size}", "камер", Icons.Default.Videocam, Ui.Accent, Modifier.weight(1f))
+                        StatTile("${recording.size}", "пишут", Icons.Default.FiberManualRecord, RecRed, Modifier.weight(1f))
+                        StatTile("$facesOn", "с лицами", Icons.Default.Face, Ui.Violet, Modifier.weight(1f))
+                    }
+                }
                 items(cams, key = { it.id }, contentType = { "cam" }) { c ->
                     CameraTile(
                         cam = c,
@@ -249,37 +249,74 @@ private fun ImportDialog(
     )
 }
 
+@Composable
+private fun StatTile(value: String, label: String, icon: ImageVector, tint: Color, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        modifier
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .border(1.dp, Ui.Line, shape)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconBadge(icon, tint, 32.dp)
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(value, style = MaterialTheme.typography.titleLarge.merge(Ui.Tabular), maxLines = 1)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = Ui.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CameraTile(cam: Camera, sub: Boolean, compact: Boolean, rec: Boolean, onClick: () -> Unit, onLong: () -> Unit) {
+    val shape = RoundedCornerShape(if (compact) 14.dp else 20.dp)
     Box(
         Modifier
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color.Black)
+            .clip(shape)
+            .background(Brush.linearGradient(listOf(Color(0xFF0E151E), Color(0xFF05070A))))
+            .border(1.dp, if (rec) RecRed.copy(alpha = 0.55f) else Ui.Line, shape)
     ) {
         if (LocalVideoActive.current) LiveVideo(cam, sub, Modifier.fillMaxSize(), compact = compact)
         Box(Modifier.matchParentSize().combinedClickable(onClick = onClick, onLongClick = onLong))
         Row(
             Modifier
+                .align(Alignment.TopStart)
+                .padding(if (compact) 6.dp else 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (rec) Pill("REC", RecRed, dot = true, pulse = true, solid = true)
+            if (cam.faces && !compact) Pill("ЛИЦА", Ui.Violet, container = Color.Black.copy(alpha = 0.55f))
+        }
+        Row(
+            Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))))
+                .padding(
+                    start = if (compact) 8.dp else 12.dp,
+                    end = if (compact) 8.dp else 12.dp,
+                    top = if (compact) 14.dp else 22.dp,
+                    bottom = if (compact) 6.dp else 10.dp,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (rec) {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(RecRed))
-                Spacer(Modifier.width(6.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    cam.name,
+                    color = Color.White,
+                    style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (!compact && cam.host.isNotBlank()) {
+                    Text(cam.host, color = Color.White.copy(alpha = 0.55f), style = Ui.Mono, maxLines = 1)
+                }
             }
-            Text(
-                cam.name,
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }

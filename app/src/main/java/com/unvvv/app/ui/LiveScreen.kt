@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -48,12 +51,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -66,6 +71,7 @@ import com.unvvv.app.data.CameraRepo
 import com.unvvv.app.face.FaceEngine
 import com.unvvv.app.record.RecordService
 import kotlinx.coroutines.delay
+import kotlin.math.min
 
 @Composable
 fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, onRecords: () -> Unit) {
@@ -162,21 +168,12 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
                 Modifier
                     .align(Alignment.TopEnd)
                     .safeDrawingPadding()
-                    .padding(12.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (cam.faces) {
-                    Icon(Icons.Default.Face, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(if (recording) 8.dp else 0.dp))
-                }
-                if (recording) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(RecRed))
-                    Spacer(Modifier.width(6.dp))
-                    Text("REC", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                }
+                if (cam.faces) Pill("ЛИЦА", Ui.Violet, container = Color.Black.copy(alpha = 0.55f))
+                if (recording) Pill("REC", RecRed, dot = true, pulse = true, solid = true)
             }
         }
 
@@ -196,20 +193,32 @@ fun LiveScreen(camId: String, onBack: () -> Unit, onSwitch: (String) -> Unit, on
                         cam.name, color = Color.White, style = MaterialTheme.typography.titleMedium,
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = { hd = !hd; poke++ }) {
-                        Text(if (hd) "HD" else "SD", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                    if (recording || cam.faces) Spacer(Modifier.width(80.dp))
+                    Pill(
+                        if (hd) "HD" else "SD",
+                        if (hd) Ui.Accent else Color.White,
+                        Modifier.clickable { hd = !hd; poke++ }.padding(end = 4.dp),
+                        container = Color.White.copy(alpha = 0.14f),
+                    )
+                    if (recording || cam.faces) Spacer(Modifier.width(if (recording && cam.faces) 128.dp else 72.dp))
                 }
 
-                Row(
+                Box(
                     Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f))))
+                        .height(160.dp)
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))))
+                )
+                Row(
+                    Modifier
+                        .align(Alignment.BottomCenter)
                         .safeDrawingPadding()
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
+                        .padding(16.dp)
+                        .clip(RoundedCornerShape(40.dp))
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(40.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     IconButton(enabled = cams.size > 1, onClick = { onSwitch(cams[(idx - 1 + cams.size) % cams.size].id) }) {
@@ -269,9 +278,9 @@ private fun FaceOverlay(data: FaceEngine.Live?, aspect: Float) {
     val labelPaint = remember {
         android.graphics.Paint().apply {
             color = android.graphics.Color.WHITE
-            textSize = 36f
+            textSize = 34f
             isAntiAlias = true
-            setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
     }
     Canvas(Modifier.fillMaxSize()) {
@@ -283,19 +292,41 @@ private fun FaceOverlay(data: FaceEngine.Live?, aspect: Float) {
         val oy = (size.height - ch) / 2f
         for (b in data.boxes) {
             val c = when {
-                b.known -> Color(0xFF22C55E)
+                b.known -> Ui.Success
                 b.label == null -> Color.White.copy(alpha = 0.6f)
                 else -> RecRed
             }
             val l = ox + b.rect.left * cw
             val t = oy + b.rect.top * ch
-            drawRect(
-                c,
+            val w = (b.rect.right - b.rect.left) * cw
+            val h = (b.rect.bottom - b.rect.top) * ch
+            val sw = 3.dp.toPx()
+            val len = min(w, h) * 0.28f
+            drawRoundRect(
+                c.copy(alpha = 0.22f),
                 topLeft = Offset(l, t),
-                size = Size((b.rect.right - b.rect.left) * cw, (b.rect.bottom - b.rect.top) * ch),
-                style = Stroke(width = 3.dp.toPx()),
+                size = Size(w, h),
+                cornerRadius = CornerRadius(6.dp.toPx()),
+                style = Stroke(width = 1.dp.toPx()),
             )
-            b.label?.let { drawContext.canvas.nativeCanvas.drawText(it, l, t - 10f, labelPaint) }
+            fun seg(x1: Float, y1: Float, x2: Float, y2: Float) =
+                drawLine(c, Offset(x1, y1), Offset(x2, y2), sw, cap = StrokeCap.Round)
+            seg(l, t, l + len, t); seg(l, t, l, t + len)
+            seg(l + w, t, l + w - len, t); seg(l + w, t, l + w, t + len)
+            seg(l, t + h, l + len, t + h); seg(l, t + h, l, t + h - len)
+            seg(l + w, t + h, l + w - len, t + h); seg(l + w, t + h, l + w, t + h - len)
+            b.label?.let { text ->
+                val pad = 8.dp.toPx()
+                val lh = labelPaint.textSize * 1.6f
+                val top = (t - lh - 6.dp.toPx()).coerceAtLeast(0f)
+                drawRoundRect(
+                    c.copy(alpha = 0.9f),
+                    topLeft = Offset(l, top),
+                    size = Size(labelPaint.measureText(text) + pad * 2, lh),
+                    cornerRadius = CornerRadius(lh / 2f),
+                )
+                drawContext.canvas.nativeCanvas.drawText(text, l + pad, top + lh / 2f + labelPaint.textSize * 0.35f, labelPaint)
+            }
         }
     }
 }

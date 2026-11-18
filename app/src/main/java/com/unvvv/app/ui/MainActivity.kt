@@ -20,11 +20,7 @@ import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -37,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -107,17 +104,21 @@ fun AppRoot() {
         }
     }
 
+    val navItems = remember {
+        listOf(
+            NavItem(0, "Камеры", Icons.Default.Videocam),
+            NavItem(1, "Записи", Icons.Default.VideoLibrary),
+            NavItem(3, "Лица", Icons.Default.Face),
+            NavItem(2, "Настройки", Icons.Default.Settings),
+        )
+    }
+
     CompositionLocalProvider(LocalVideoActive provides active) {
+      AppBackground {
         when (val r = stack.last()) {
             Route.Home -> Scaffold(
-                bottomBar = {
-                    NavigationBar {
-                        NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Videocam, null) }, label = { Text("Камеры") })
-                        NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.VideoLibrary, null) }, label = { Text("Записи") })
-                        NavigationBarItem(tab == 3, { tab = 3 }, { Icon(Icons.Default.Face, null) }, label = { Text("Лица") })
-                        NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.Settings, null) }, label = { Text("Настройки") })
-                    }
-                }
+                containerColor = Color.Transparent,
+                bottomBar = { FloatingNavBar(navItems, tab) { tab = it } },
             ) { pad ->
                 Box(Modifier.fillMaxSize().padding(pad).consumeWindowInsets(pad)) {
                     when (tab) {
@@ -148,5 +149,6 @@ fun AppRoot() {
             Route.Scan -> ScanScreen(onBack = pop)
             is Route.Play -> PlayerScreen(camId = r.camId, path = r.path, onBack = pop)
         }
+      }
     }
 }
