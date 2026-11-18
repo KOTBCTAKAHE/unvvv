@@ -6,6 +6,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +14,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -33,6 +41,8 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -103,62 +113,57 @@ fun RecordsScreen(filter: String?, onFilter: (String?) -> Unit, onPlay: (String,
     val shown = all.filter { filter == null || it.camId == filter }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Записи")
-                        Text(
-                            "${fmtSize(used)} · файлов: ${shown.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                        )
-                    }
-                },
-                actions = { IconButton(onClick = { tick++ }) { Icon(Icons.Default.Refresh, "Обновить") } },
-            )
+            AppHeader(
+                title = "Записи",
+                subtitle = "${fmtSize(used)} · файлов: ${shown.size}",
+            ) {
+                HeaderAction(Icons.Default.Refresh, "Обновить", onClick = { tick++ })
+            }
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             if (chipIds.isNotEmpty()) {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    item { FilterChip(filter == null, { onFilter(null) }, label = { Text("Все") }) }
-                    items(chipIds) { id ->
-                        FilterChip(filter == id, { onFilter(id) }, label = { Text(names[id] ?: "Удалённая") })
-                    }
-                }
+                ChoiceRow(
+                    options = listOf<String?>(null) + chipIds,
+                    selected = filter,
+                    label = { id -> if (id == null) "Все камеры" else names[id] ?: "Удалённая" },
+                    onSelect = onFilter,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
+                    padding = 16.dp,
+                )
             }
             when {
                 recs == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                shown.isEmpty() -> Text(
-                    "Записей пока нет.\n\n• Постоянная запись: долгое нажатие на камеру → «Постоянная запись».\n• Разовая запись: откройте камеру и нажмите красную кнопку ●.",
-                    Modifier.padding(24.dp),
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                else -> LazyColumn(Modifier.fillMaxSize()) {
+                shown.isEmpty() -> Column(
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    EmptyState(
+                        Icons.Default.VideoLibrary,
+                        "Записей пока нет",
+                        "Постоянная запись: долгое нажатие на камеру → «Постоянная запись».\nРазовая: откройте камеру и нажмите красную кнопку ●.",
+                    )
+                }
+                else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
                     shown.groupBy { fmtDay(it.start) }.forEach { (day, dayRecs) ->
                         item(key = "h_$day") {
-                            Text(
-                                day.replaceFirstChar { it.uppercase() },
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
-                            )
+                            SectionLabel(day) {
+                                Text(
+                                    "${dayRecs.size} · ${fmtSize(dayRecs.sumOf { it.size })}",
+                                    style = MaterialTheme.typography.labelSmall.merge(Ui.Tabular),
+                                    color = Ui.Muted,
+                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                            }
                         }
                         items(dayRecs, key = { it.file.path }) { r ->
-                            ListItem(
-                                headlineContent = { Text("${fmtClock(r.start)} – ${fmtClock(r.end)}") },
-                                supportingContent = {
-                                    Text("${names[r.camId] ?: "Удалённая камера"} · ${fmtSize(r.size)}", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                },
-                                leadingContent = { Icon(Icons.Default.Movie, null, tint = MaterialTheme.colorScheme.primary) },
-                                trailingContent = {
-                                    IconButton(onClick = { toDelete = r }) { Icon(Icons.Default.Delete, "Удалить") }
-                                },
-                                modifier = Modifier.clickable { onPlay(r.camId, r.file.path) },
+                            RecordRow(
+                                r = r,
+                                camName = names[r.camId] ?: "Удалённая камера",
+                                onPlay = { onPlay(r.camId, r.file.path) },
+                                onDelete = { toDelete = r },
                             )
                         }
                     }
@@ -181,6 +186,50 @@ fun RecordsScreen(filter: String?, onFilter: (String?) -> Unit, onPlay: (String,
             },
             dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Отмена") } },
         )
+    }
+}
+
+@Composable
+private fun RecordRow(r: Storage.Rec, camName: String, onPlay: () -> Unit, onDelete: () -> Unit) {
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .border(1.dp, Ui.Line, shape)
+            .clickable(onClick = onPlay)
+            .padding(start = 10.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(width = 62.dp, height = 44.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Brush.linearGradient(listOf(Ui.Accent.copy(alpha = 0.28f), Ui.Accent2.copy(alpha = 0.16f)))),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Default.PlayArrow, null, tint = Ui.Accent, modifier = Modifier.size(26.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "${fmtClock(r.start)} – ${fmtClock(r.end)}",
+                style = MaterialTheme.typography.titleSmall.merge(Ui.Tabular),
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "$camName · ${fmtSize(r.size)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Ui.Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Pill(fmtDur(r.end - r.start), Ui.Accent)
+        IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Удалить", tint = Ui.Muted) }
     }
 }
 
@@ -295,7 +344,7 @@ fun PlayerScreen(camId: String, path: String, onBack: () -> Unit) {
                             IconButton(onClick = {
                                 if (fp.ended) fp.open(rec.file) else fp.toggle()
                                 poke++
-                            }, modifier = Modifier.size(56.dp)) {
+                            }, modifier = Modifier.size(60.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.16f))) {
                                 Icon(
                                     if (fp.playing) Icons.Default.Pause else Icons.Default.PlayArrow, "Пауза",
                                     tint = Color.White, modifier = Modifier.size(40.dp),

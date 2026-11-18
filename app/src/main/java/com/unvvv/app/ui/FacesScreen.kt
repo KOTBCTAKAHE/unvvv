@@ -12,6 +12,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,7 +37,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -68,6 +72,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -118,9 +124,9 @@ private fun Avatar(thumb: String?, size: Dp) {
         FileImage(FaceDb.img(thumb), Modifier.size(size).clip(CircleShape))
     } else {
         Box(
-            Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+            Modifier.size(size).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF1C2735), Color(0xFF111720)))),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Default.Person, null) }
+        ) { Icon(Icons.Default.Person, null, tint = Ui.Muted, modifier = Modifier.size(size * 0.55f)) }
     }
 }
 
@@ -182,100 +188,169 @@ fun FacesScreen() {
     val camNames = cams.associate { it.id to it.name }
     val shown = if (onlyUnknown) events.filter { it.personId == null } else events
 
+    val unknownCount = events.count { it.personId == null }
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
-                title = { Text("Лица") },
-                actions = { IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Tune, "Настройки распознавания") } },
-            )
+            AppHeader(
+                title = "Лица",
+                subtitle = "${people.size} знакомых · ${events.size} событий · ${watching.size} камер следят",
+            ) {
+                HeaderAction(Icons.Default.Tune, "Настройки распознавания", onClick = { showSettings = true })
+            }
         },
     ) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            item { Header("Распознавание на камерах") }
-            if (cams.isEmpty()) item { Hint("Сначала добавьте камеры.") }
-            items(cams, key = { "c_" + it.id }) { c ->
-                ListItem(
-                    headlineContent = { Text(c.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    supportingContent = {
-                        Text(
+            item(key = "h_cams") { SectionLabel("Распознавание на камерах") }
+            item(key = "cams") {
+                Panel(Modifier.padding(horizontal = 16.dp), spacing = 6.dp) {
+                    if (cams.isEmpty()) Hint("Сначала добавьте камеры.")
+                    cams.forEach { c ->
+                        val on = c.id in watching
+                        SettingRow(
+                            c.name,
                             when {
-                                c.id in watching -> "Работает в фоне"
+                                on -> "Работает в фоне"
                                 c.faces -> "Запускается…"
                                 else -> "Выключено"
-                            }
-                        )
-                    },
-                    trailingContent = {
-                        Switch(c.faces, { on ->
-                            CameraRepo.upsert(c.copy(faces = on))
-                            RecordService.ensure(ctx)
-                        })
-                    },
-                )
-            }
-
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Header("Знакомые люди (${people.size})", Modifier.weight(1f))
-                    TextButton(onClick = { addPerson = true }) {
-                        Icon(Icons.Default.Add, null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Добавить")
+                            },
+                            Icons.Default.Videocam,
+                            when {
+                                on -> Ui.Success
+                                c.faces -> Ui.Warning
+                                else -> Ui.Muted
+                            },
+                        ) {
+                            Switch(c.faces, { v ->
+                                CameraRepo.upsert(c.copy(faces = v))
+                                RecordService.ensure(ctx)
+                            })
+                        }
                     }
                 }
             }
+
+            item(key = "h_people") {
+                SectionLabel("Знакомые люди · ${people.size}") {
+                    Pill("+ ДОБАВИТЬ", Ui.Accent, Modifier.clickable { addPerson = true })
+                }
+            }
             if (people.isEmpty()) {
-                item {
-                    Hint("Добавьте 3–10 фото человека из галереи или отмечайте людей в событиях ниже — чем больше снимков с ваших камер, тем точнее узнавание.")
+                item(key = "p_empty") {
+                    Panel(Modifier.padding(horizontal = 16.dp), onClick = { addPerson = true }) {
+                        SettingRow(
+                            "Добавьте первого человека",
+                            "3–10 фото из галереи или отмечайте людей в событиях ниже — чем больше снимков с ваших камер, тем точнее узнавание.",
+                            Icons.Default.PersonAdd,
+                        )
+                    }
                 }
             } else {
-                item {
-                    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        items(people, key = { it.id }) { p ->
+                item(key = "people") {
+                    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        item(key = "add") {
                             Column(
-                                Modifier.width(72.dp).clickable { openPerson = p },
+                                Modifier.width(76.dp).clickable { addPerson = true },
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                Avatar(p.thumb, 64.dp)
-                                Spacer(Modifier.height(4.dp))
+                                Box(
+                                    Modifier
+                                        .size(68.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                        .border(1.dp, Ui.Line, CircleShape),
+                                    contentAlignment = Alignment.Center,
+                                ) { Icon(Icons.Default.Add, "Добавить", tint = Ui.Accent) }
+                                Spacer(Modifier.height(6.dp))
+                                Text("Новый", style = MaterialTheme.typography.labelMedium, color = Ui.Muted)
+                            }
+                        }
+                        items(people, key = { it.id }) { p ->
+                            Column(
+                                Modifier.width(76.dp).clickable { openPerson = p },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(
+                                    Modifier.size(68.dp).background(Ui.AccentGradient, CircleShape).padding(2.5.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Box(Modifier.fillMaxSize().background(Ui.Bg, CircleShape).padding(2.dp)) {
+                                        Avatar(p.thumb, 59.dp)
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
                                 Text(p.name, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("${p.embs.size} фото", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+                                Text("${p.embs.size} фото", style = MaterialTheme.typography.labelSmall.merge(Ui.Tabular), color = Ui.Muted)
                             }
                         }
                     }
                 }
             }
 
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 8.dp)) {
-                    Header("События", Modifier.weight(1f))
-                    FilterChip(onlyUnknown, { onlyUnknown = !onlyUnknown }, label = { Text("Незнакомые") })
+            item(key = "h_events") {
+                SectionLabel("События") {
+                    Pill(
+                        if (onlyUnknown) "НЕЗНАКОМЫЕ · $unknownCount" else "ВСЕ · ${events.size}",
+                        if (onlyUnknown) RecRed else Ui.Muted,
+                        Modifier.clickable { onlyUnknown = !onlyUnknown },
+                    )
                     IconButton(enabled = events.isNotEmpty(), onClick = { confirmClear = true }) {
-                        Icon(Icons.Default.DeleteSweep, "Очистить")
+                        Icon(Icons.Default.DeleteSweep, "Очистить", tint = if (events.isNotEmpty()) Ui.Muted else Ui.Muted.copy(alpha = 0.3f))
                     }
                 }
             }
             if (shown.isEmpty()) {
-                item { Hint("Пока пусто. Включите распознавание на камере — здесь появятся все замеченные лица.") }
+                item(key = "e_empty") {
+                    EmptyState(
+                        Icons.Default.Face,
+                        "Пока пусто",
+                        "Включите распознавание на камере — здесь появятся все замеченные лица.",
+                    )
+                }
             }
             items(shown.take(300), key = { it.id }) { e ->
                 val who = e.personId?.let { names[it] }
-                ListItem(
-                    leadingContent = { FileImage(FaceDb.img(e.face), Modifier.size(48.dp).clip(CircleShape)) },
-                    headlineContent = {
+                val tint = if (who == null) RecRed else Ui.Success
+                val shape = RoundedCornerShape(18.dp)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(shape)
+                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                        .border(1.dp, Ui.Line, shape)
+                        .clickable { openEvent = e }
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FileImage(
+                        FaceDb.img(e.face),
+                        Modifier
+                            .size(54.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(2.dp, tint.copy(alpha = 0.7f), RoundedCornerShape(16.dp)),
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
                         Text(
                             who ?: "Незнакомый",
+                            style = MaterialTheme.typography.titleSmall,
                             color = if (who == null) RecRed else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                    },
-                    supportingContent = {
+                        Spacer(Modifier.height(2.dp))
                         Text(
-                            "${camNames[e.camId] ?: "Камера"} · ${fmtDayShort(e.time)} · сходство ${(e.score * 100).roundToInt()}%",
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            "${camNames[e.camId] ?: "Камера"} · ${fmtDayShort(e.time)}",
+                            style = MaterialTheme.typography.bodySmall.merge(Ui.Tabular),
+                            color = Ui.Muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                    },
-                    modifier = Modifier.clickable { openEvent = e },
-                )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Pill("${(e.score * 100).roundToInt()}%", tint)
+                }
             }
         }
     }
@@ -301,16 +376,6 @@ fun FacesScreen() {
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Отмена") } },
         )
     }
-}
-
-@Composable
-private fun Header(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp),
-    )
 }
 
 @Composable
