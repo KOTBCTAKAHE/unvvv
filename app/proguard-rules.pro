@@ -1,4 +1,4 @@
 -keep class org.videolan.** { *; }
 -dontwarn org.videolan.**
--keep class org.tensorflow.lite.** { *; }
--dontwarn org.tensorflow.lite.**
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**
